@@ -2,10 +2,13 @@ package net.thornydev;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
+import java.math.BigInteger;
 import java.util.Iterator;
+import java.util.List;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
+import javafx.beans.binding.BooleanBinding;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -97,39 +100,106 @@ public class JsonHiveSchema  {
 
     while (keys.hasNext()) {
       String k = keys.next();
-      sb.append("  ");
-      sb.append(k.toString());
-      sb.append(' ');
-      sb.append(valueToHiveSchema(jo.opt(k)));
-      sb.append(',').append("\n");
+
+      try {
+        String hiveColType = valueToHiveSchema(k, jo.opt(k));
+        sb.append("  ");
+        sb.append(k.toString());
+        sb.append(' ');
+        sb.append(hiveColType);
+        sb.append(',').append("\n");
+
+      } catch (IllegalStateException e){
+        System.err.println("Dropping Key: " + k + " because error:" + e);
+      }
+
     }
 
     sb.replace(sb.length() - 2, sb.length(), ")\n"); // remove last comma
     return sb.append("ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe';").toString();
   }
 
-  private String toHiveSchema(JSONObject o) throws JSONException { 
-    @SuppressWarnings("unchecked")
+  private String toHiveSchema(String colName, JSONObject o) throws JSONException {
+
+    if (objectShouldBeAMap(colName, o)){
+      return toHiveMap(colName, o);
+    } else {
+      return toHiveStruct(colName, o);
+
+    }
+  }
+
+  private Boolean objectShouldBeAMap(String colName, JSONObject o){
+    if (colName.endsWith("_map")){
+      return true;
+    }
+
+    Boolean allIntLike = true;
     Iterator<String> keys = o.keys();
     keys = new OrderedIterator(keys);
+
+    while (keys.hasNext()) {
+      String k = keys.next();
+
+      if (!k.chars().allMatch( Character::isDigit ))
+        return false;
+    }
+
+    return allIntLike;
+  }
+
+  private String toHiveMap(String colName, JSONObject o) throws JSONException {
+    Iterator<String> keys = o.keys();
+    keys = new OrderedIterator(keys);
+
+    if (keys.hasNext()){
+
+      StringBuilder sb = new StringBuilder("map<");
+
+      String k = keys.next();
+      sb.append("string");
+      sb.append(',');
+      sb.append(valueToHiveSchema(k, o.opt(k)));
+      sb.append(">");
+
+      return sb.toString();
+
+    } else {
+      //return "XXXXX";
+      throw new IllegalStateException("Empty map");
+    }
+
+  }
+
+  private String toHiveStruct(String colName, JSONObject o) throws JSONException {
+    Iterator<String> keys = o.keys();
+    keys = new OrderedIterator(keys);
+
     StringBuilder sb = new StringBuilder("struct<");
     
     while (keys.hasNext()) {
       String k = keys.next();
-      sb.append(k.toString());
-      sb.append(':');
-      sb.append(valueToHiveSchema(o.opt(k)));
-      sb.append(", ");
+
+      try {
+        String colHiveType = valueToHiveSchema(k, o.opt(k));
+
+        sb.append(k.toString());
+        sb.append(':');
+        sb.append(colHiveType);
+        sb.append(", ");
+      } catch (IllegalStateException e){
+        System.err.println("Dropping Key: " + k + " because error:" + e);
+      }
     }
     sb.replace(sb.length() - 2, sb.length(), ">"); // remove last comma
     return sb.toString();
   }
 
-  private String toHiveSchema(JSONArray a) throws JSONException {
-    return "array<" + arrayJoin(a, ",") + '>';
+  private String toHiveSchema(String colName, JSONArray a) throws JSONException {
+    return "array<" + arrayJoin(colName, a, ",") + '>';
   }
 
-  private String arrayJoin(JSONArray a, String separator) throws JSONException {
+  private String arrayJoin(String colName, JSONArray a, String separator) throws JSONException {
     StringBuilder sb = new StringBuilder();
 
     if (a.length() == 0) {
@@ -140,9 +210,9 @@ public class JsonHiveSchema  {
     if ( isScalar(entry0) ) {
       sb.append( scalarType(entry0) );
     } else if (entry0 instanceof JSONObject) {
-      sb.append( toHiveSchema((JSONObject)entry0) );
-    } else if (entry0 instanceof JSONArray) {    
-      sb.append( toHiveSchema((JSONArray)entry0) );
+      sb.append( toHiveSchema(colName, (JSONObject)entry0) );
+    } else if (entry0 instanceof JSONArray) {
+      sb.append( toHiveSchema(colName, (JSONArray)entry0) );
     }
     return sb.toString();
   }
@@ -159,7 +229,13 @@ public class JsonHiveSchema  {
     if (s.indexOf('.') > 0) {
       return "double";
     } else {
-      return "int";
+
+      try {
+        Integer i = Integer.valueOf(s);
+        return "int";
+      } catch (NumberFormatException e) {
+        return "bigint";
+      }
     }
   }
 
@@ -170,13 +246,13 @@ public class JsonHiveSchema  {
         o == JSONObject.NULL;
   }
 
-  private String valueToHiveSchema(Object o) throws JSONException {
+  private String valueToHiveSchema(String colName, Object o) throws JSONException {
     if ( isScalar(o) ) {
       return scalarType(o);
     } else if (o instanceof JSONObject) {
-      return toHiveSchema((JSONObject)o);
+      return toHiveSchema(colName, (JSONObject)o);
     } else if (o instanceof JSONArray) {
-      return toHiveSchema((JSONArray)o);
+      return toHiveSchema(colName, (JSONArray) o);
     } else {
       throw new IllegalArgumentException("unknown type: " + o.getClass());
     }
